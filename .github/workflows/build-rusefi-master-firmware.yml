@@ -1,0 +1,117 @@
+name: Build rusEFI master firmware
+
+on:
+   schedule:
+     - cron: '30 2 * * *'
+   workflow_dispatch:
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set env
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+
+      - name: Checkout rusEFI code
+        uses: actions/checkout@v4
+        with:
+          repository: rusefi/rusefi
+          ref: master
+
+      - name: Checkout submodules
+        run: |
+           git submodule update --init --depth=1 firmware/ChibiOS
+           git submodule update --init --depth=1 firmware/ChibiOS-Contrib
+           git submodule update --init --depth=1 firmware/libfirmware
+           git submodule update --init --depth=1 firmware/ext/lua
+           git submodule update --init --depth=1 firmware/ext/uzlib
+           git submodule update --init --depth=1 firmware/ext/openblt
+           git submodule update --init --depth=1 firmware/controllers/lua/luaaa
+           git submodule update --init --depth=1 firmware/controllers/can/wideband_firmware
+           git submodule update --init --depth=1 java_console/luaformatter
+           git submodule update --init --depth=1 java_console/peak-can-basic
+
+      - name: Download local code
+        run: |
+          mkdir -p firmware/config/boards/lcecu
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/board.mk -O firmware/config/boards/lcecu/board.mk
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/board_configuration.cpp -O firmware/config/boards/lcecu/board_configuration.cpp
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/knock_config.h -O firmware/config/boards/lcecu/knock_config.h
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/prepend.txt -O firmware/config/boards/lcecu/prepend.txt
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/compile_lcecu.sh -O firmware/config/boards/lcecu/compile_lcecu.sh
+          rm misc/jenkins/compile_other_versions/prepare_bundle.sh misc/jenkins/build_working_folder.sh
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/prepare_bundle.sh -O misc/jenkins/compile_other_versions/prepare_bundle.sh
+          wget https://raw.githubusercontent.com/jankovalski/lcecu/main/rusefi/build_working_folder.sh -O misc/jenkins/build_working_folder.sh
+
+      - name: Download & install GCC
+        if: ${{ env.skip != 'true' }}
+        env:
+          ACTIONS_ALLOW_UNSECURE_COMMANDS: 'true'
+        run: |
+          firmware/provide_gcc.sh
+          echo "::add-path::`pwd`/gcc-arm-none-eabi/bin"
+
+      - name: Install tools
+        run: |
+          sudo bash misc/actions/add-ubuntu-latest-apt-mirrors.sh
+          sudo apt install sshpass sshpass mtools
+      
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '11'
+
+      - name: Test compiler
+        run: javac -version
+
+      - name: Remove .ini files
+        run: rm -rf firmware/tunerstudio/generated/*.ini
+
+      - name: Generate config
+        working-directory: firmware
+        run: |
+          bash gen_config_board.sh config/boards/lcecu lcecu
+
+      - name: Build firmware
+        run: bash misc/jenkins/compile_other_versions/compile.sh config/boards/lcecu lcecu
+
+      - name: Build console
+        run: bash misc/jenkins/build_java_console.sh
+
+      - name: Package and upload bundle
+        run: bash misc/jenkins/compile_other_versions/prepare_bundle.sh lcecu firmware/tunerstudio/generated/rusefi_lcecu.ini
+
+      - name: Setup SSH
+        run: |
+         install -m 600 -D /dev/null ~/.ssh/id_rsa
+         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+         echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+      - name: Upload firmware and bundle
+        run: |
+          cp firmware/deliver/rusefi.bin rusefi_master_${{ env.date }}_lcecu.bin
+          rsync -rav -e 'ssh -p 65321' rusefi_master_${{ env.date }}_lcecu.bin github@"${{ secrets.SSH_SERVER }}":~/www/firmware/rusefi/master
+          cp firmware/tunerstudio/generated/rusefi_lcecu.ini rusefi_master_${{ env.date }}_lcecu.ini
+          rsync -rav -e 'ssh -p 65321' rusefi_master_${{ env.date }}_lcecu.ini github@"${{ secrets.SSH_SERVER }}":~/www/firmware/rusefi/master
+          cp artifacts/rusefi_bundle_lcecu.zip rusefi_bundle_master_${{ env.date }}_lcecu.zip
+          rsync -rav -e 'ssh -p 65321' rusefi_bundle_master_${{ env.date }}_lcecu.zip github@"${{ secrets.SSH_SERVER }}":~/www/firmware/rusefi/master
+
+      - name: Upload build bin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusefi_master_${{ env.date }}_lcecu.bin
+          path: rusefi_master_${{ env.date }}_lcecu.bin
+
+      - name: Upload ini artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusefi_master_${{ env.date }}_lcecu.ini
+          path: rusefi_master_${{ env.date }}_lcecu.ini
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusefi_master_${{ env.date }}_lcecu
+          path: rusefi_master_${{ env.date }}_lcecu.zip
