@@ -1,0 +1,63 @@
+name: Build Speeduino 202402 firmware
+
+on:
+   workflow_dispatch:
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Set env
+      run: echo "date=202402" >> $GITHUB_ENV
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: noisymime/speeduino
+        ref: 202402
+
+    - name: Replace platformio.ini
+      run: |
+        rm platformio.ini
+        wget 'https://raw.githubusercontent.com/jankovalski/lcecu/main/speeduino/platformio.ini'
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+
+    - name: Install PlatformIO
+      run: |
+        python -m pip install --upgrade pip
+        pip install --upgrade platformio
+        
+    - name: Install Arduino STM32 for PlatformIO
+      run: pio pkg install 
+
+    - name: Replace STM32 Core Files
+      run: |
+        rm '/home/runner/.platformio/packages/framework-arduinoststm32/variants/STM32F4xx/F407Z(E-G)T_F417Z(E-G)T/variant_BLACK_F407ZX.cpp'
+        rm '/home/runner/.platformio/packages/framework-arduinoststm32/variants/STM32F4xx/F407Z(E-G)T_F417Z(E-G)T/variant_BLACK_F407ZX.h'
+        wget 'https://raw.githubusercontent.com/jankovalski/lcecu/main/speeduino/stm32_core_files/variants/STM32F4xx/F407Z(E-G)T_F417Z(E-G)T/variant_BLACK_F407ZX.cpp' -O '/home/runner/.platformio/packages/framework-arduinoststm32/variants/STM32F4xx/F407Z(E-G)T_F417Z(E-G)T/variant_BLACK_F407ZX.cpp'
+        wget 'https://raw.githubusercontent.com/jankovalski/lcecu/main/speeduino/stm32_core_files/variants/STM32F4xx/F407Z(E-G)T_F417Z(E-G)T/variant_BLACK_F407ZX.h' -O '/home/runner/.platformio/packages/framework-arduinoststm32/variants/STM32F4xx/F407Z(E-G)T_F417Z(E-G)T/variant_BLACK_F407ZX.h'
+
+    - name: Edit init.ino
+      run: |
+        wget https://raw.githubusercontent.com/jankovalski/lcecu/main/speeduino/edit-init-cpp.sh
+        bash edit-init-cpp.sh
+
+    - name: Build for STM32
+      run: platformio run -e black_F407ZG
+
+    - name: Setup SSH
+      run: |
+         install -m 600 -D /dev/null ~/.ssh/id_rsa
+         echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+         echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+
+    - name: Upload firmware
+      run: |
+        cp .pio/build/black_F407ZG/firmware.bin speeduino_${{ env.date }}_lcecu.bin
+        cp reference/speeduino.ini speeduino_${{ env.date }}_lcecu.ini
+        rsync -rav --delete-before -e 'ssh -p 65321' speeduino_${{ env.date }}_lcecu.bin github@"${{ secrets.SSH_SERVER }}":~/www/firmware/speeduino/
+        rsync -rav --delete-before -e 'ssh -p 65321' speeduino_${{ env.date }}_lcecu.ini github@"${{ secrets.SSH_SERVER }}":~/www/firmware/speeduino/
